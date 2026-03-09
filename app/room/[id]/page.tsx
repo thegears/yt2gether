@@ -1,20 +1,48 @@
 "use client";
+import dynamic from "next/dynamic";
 import Chat from "@/components/room/chat";
-import Player from "@/components/room/player";
+const Player = dynamic(() => import("@/components/room/player"), {
+  ssr: false,
+});
 import Playlist from "@/components/room/playlist";
 import { supabase } from "@/lib/supabase";
-import { use, useEffect, useRef, useState } from "react";
+import { use, useEffect, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ListMusic, MessageSquare, User } from "lucide-react";
 import Profile from "@/components/room/profile";
 import { YouTubeVideo } from "@/app/actions/search-video";
-import { getQueue } from "@/app/actions/videoqueue";
-import ReactPlayer from "react-player";
+import { getQueue, getTimestamp, setTimestamp } from "@/app/actions/videoqueue";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { RealtimeChannel } from "@supabase/supabase-js";
 
 export interface MessageAuthor {
   name: string;
   color: string;
   icon: string;
+}
+
+export function sendSystemMessage(channel: RealtimeChannel, content: string) {
+  const message = {
+    author: {
+      name: "System",
+      icon: "User",
+      color: "black",
+    },
+    content,
+  };
+
+  channel?.send({
+    type: "broadcast",
+    event: "chat",
+    payload: message,
+  });
 }
 
 export default function Room({ params }: { params: Promise<{ id: string }> }) {
@@ -25,55 +53,28 @@ export default function Room({ params }: { params: Promise<{ id: string }> }) {
     { content: string; author: MessageAuthor }[]
   >([
     {
-      content: "Selam beyler, oda kuruldu mu?",
-      author: { name: "Ahmet", color: "#ef4444", icon: "Gamepad2" },
+      author: {
+        name: "System",
+        icon: "User",
+        color: "black",
+      },
+      content: `This is a new project and may contain bugs. Please report any issues you find on GitHub.`,
     },
     {
-      content: "Aynen kurdum, linki gruba attım.",
-      author: { name: "Semih", color: "#3b82f6", icon: "Terminal" },
-    },
-    {
-      content: "Video kalitesi neden 480p? Kim başlattı bunu :D",
-      author: { name: "Ceren", color: "#ec4899", icon: "Cat" },
-    },
-    {
-      content: "Benim internet gg beyler kusura bakmayın.",
-      author: { name: "Burak", color: "#10b981", icon: "Zap" },
-    },
-    {
-      content: "Olsun kanka izliyoruz işte, sıkıntı yok.",
-      author: { name: "Semih", color: "#3b82f6", icon: "Terminal" },
-    },
-    {
-      content: "Şu videonun 2:30 dakikasındaki şarkı neydi?",
-      author: { name: "Derya", color: "#f59e0b", icon: "Headphones" },
-    },
-    {
-      content: "Shazamladım şimdi, Darude - Sandstorm'muş.",
-      author: { name: "Ahmet", color: "#ef4444", icon: "Gamepad2" },
-    },
-    {
-      content: "Klasik...",
-      author: { name: "Ceren", color: "#ec4899", icon: "Cat" },
-    },
-    {
-      content: "Beyler ses bende mi çok az yoksa genel mi?",
-      author: { name: "Mert", color: "#8b5cf6", icon: "Cpu" },
-    },
-    {
-      content: "Bende normal kanka, senin kulaklık ayarına bak bir.",
-      author: { name: "Semih", color: "#3b82f6", icon: "Terminal" },
-    },
-    {
-      content: "Ghost of Tsushima mı izlesek sonra?",
-      author: { name: "Semih", color: "#3b82f6", icon: "Ghost" },
+      author: {
+        name: "System",
+        icon: "User",
+        color: "black",
+      },
+      content:
+        "Video playback is synchronized: if one person's video pauses due to a slow connection, it will pause for everyone.",
     },
   ]);
 
   const [queue, setQueue] = useState<YouTubeVideo[]>([]);
   const [activeVideo, setActiveVideo] = useState<YouTubeVideo>();
   const [isVideoPlaying, setIsVideoPlaying] = useState<boolean>(false);
-  const playerRef = useRef<typeof ReactPlayer>(null);
+  const [videoTime, setVideoTime] = useState<number>(0);
 
   const [author, setAuthor] = useState<MessageAuthor>(() => {
     if (typeof window !== "undefined") {
@@ -100,11 +101,22 @@ export default function Room({ params }: { params: Promise<{ id: string }> }) {
         const video = payload.payload;
         setQueue((prev) => [...prev, video]);
       })
-      .on("broadcast", { event: "video-control" }, (payload) => {
+      .on("broadcast", { event: "video-control" }, async (payload) => {
         const control = payload.payload;
 
-        if (control.action == "play") setIsVideoPlaying(true);
+        if (control.action == "play") {
+          setIsVideoPlaying(true);
+        }
+
         if (control.action == "pause") setIsVideoPlaying(false);
+        if (control.action == "seek") {
+          setVideoTime(control.time.time);
+          setTimestamp(id, control.time.time);
+        }
+
+        if (control.action == "ended") {
+          setQueue(await getQueue(id));
+        }
       })
       .subscribe();
 
@@ -116,24 +128,48 @@ export default function Room({ params }: { params: Promise<{ id: string }> }) {
   useEffect(() => {
     async function ef() {
       setQueue(await getQueue(id));
+      setVideoTime(await getTimestamp(id));
+
+      sendSystemMessage(channel, `${author.name} joined the room.`);
+
+      console.log(await getTimestamp(id));
     }
     ef();
   }, [id]);
 
   useEffect(() => {
     function ef() {
-      if (!activeVideo) setActiveVideo(queue[0]);
+      setActiveVideo(queue[0] || "");
     }
     ef();
   }, [queue]);
 
+  useEffect(() => {
+    function ef() {
+      const playerApi = window.playerApi?.api;
+      if (playerApi) {
+        const timeDiff = Math.abs(playerApi?.getCurrentTime() - videoTime);
+
+        if (timeDiff > 1) {
+          playerApi.seekTo(videoTime);
+        }
+      }
+    }
+    ef();
+  }, [videoTime]);
+
   return (
     <main className="flex h-screen">
+      <JoinRoomModal />
+
       <div className="flex-10/12 h-screen">
         <Player
           channel={channel}
           activeVideo={activeVideo}
           isVideoPlaying={isVideoPlaying}
+          author={author}
+          room={id}
+          setQueue={setQueue}
         />
       </div>
 
@@ -192,5 +228,31 @@ export default function Room({ params }: { params: Promise<{ id: string }> }) {
         </TabsList>
       </Tabs>
     </main>
+  );
+}
+
+export function JoinRoomModal() {
+  const [isModalOpen, setIsModalOpen] = useState(true);
+
+  return (
+    <Dialog open={isModalOpen}>
+      <DialogContent className="sm:max-w-[425px]">
+        <DialogHeader>
+          <DialogTitle>Welcome!</DialogTitle>
+          <DialogDescription>
+            Join the room to start watching videos with your friends!
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex justify-center py-4">
+          <Button
+            onClick={() => setIsModalOpen(false)}
+            size="lg"
+            className="w-full"
+          >
+            Join & Enable Audio
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

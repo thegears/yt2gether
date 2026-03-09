@@ -42,6 +42,7 @@ export default function Playlist({
         <PopoverAnchor asChild>
           <Input
             value={searchTerm}
+            placeholder="Search..."
             onChange={(e) => {
               setSearchVideos([]);
               setSearchTerm(e.target.value);
